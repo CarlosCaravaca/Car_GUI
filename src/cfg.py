@@ -1,6 +1,6 @@
 #File paths
 log_path = "../log/log.txt"
-logo_path = "../img/seat_logo.png"
+logo_path = "img/seat_logo.png"
 
 #Car Information
 make = "SEAT"
@@ -37,3 +37,7 @@ color_lambda_2good = 'chartreuse2'
 
 #Sizes
 pointer_width = 6 / 2 
+
+#Other
+labelsX = 6
+valuesX = 170
