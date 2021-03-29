@@ -1,6 +1,6 @@
 #File paths
 log_path = "../log/log.txt"
-logo_path = "../img/seat_logo.png"
+logo_path = "img/seat_logo.png"
 
 #Car Information
 make = "SEAT"
@@ -40,4 +40,4 @@ pointer_width = 6 / 2
 
 #Other
 labelsX = 6
-valuesX = 170
+valuesX = 340
