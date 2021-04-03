@@ -2,6 +2,12 @@ import tkinter as tk
 from tkinter import ttk
 from cfg import *
 from PIL import Image, ImageTk
+import obd
+import time
+import datetime
+import os
+import subprocess
+import json
 
 '''
 GUI
@@ -178,6 +184,145 @@ def gui():
 	gasBar = ttk.Progressbar(master, style="gasBarTheme.Horizontal.TProgressbar", orient="horizontal", length=360, mode="determinate", maximum=100)
 	gasBar.place(x=580, y=455)
 	
+	obd.logger.setLevel(obd.logging.ERROR)
+
+	connectionStatus = obd.OBDStatus.NOT_CONNECTED
+	connection = None
+	
+	logValuesToFile = True
+	logFileName = "/home/pi/obd2_values.txt"
+	
+	# Custom ELM-Voltage parser & command for my module
+	def elmVoltageCustom(messages):
+		return messages[0].frames[0].raw.lower().split('v')[0].replace('v', '')
+
+	voltagecmd = obd.OBDCommand("ELM_VOLTAGECUSTOM", "Voltage custom", b"ATRV", 0, elmVoltageCustom, obd.ECU.UNKNOWN, False)
+	
+	class CarData:
+		def __init__(self, connectionStatus, batteryVoltage, coolantTemperature, intakeTemperature, intakeAirflow, lambdaVoltage1, lambdaVoltage2, timingAdvance, engineLoad, throttle, speed, rpm):
+			self.timestamp = int(round(time.time() * 1000))
+			self.connectionStatus = connectionStatus
+			self.batteryVoltage = batteryVoltage
+			self.coolantTemperature = coolantTemperature
+			self.intakeTemperature = intakeTemperature
+			self.intakeAirflow = intakeAirflow
+			self.lambdaVoltage1 = lambdaVoltage1
+			self.lambdaVoltage2 = lambdaVoltage2
+			self.timingAdvance = timingAdvance
+			self.engineLoad = engineLoad
+			self.throttle = throttle
+			self.speed = speed
+			self.rpm = rpm
+		
+	def QueryAndParseResultSpace(connection, cmd, roundDecimals):
+		try:
+			result = 0
+			rawResult = connection.query(cmd)
+	
+			if rawResult != None and str(rawResult) != "None" and str(rawResult.value) != "atr":
+				try:
+					splittedStuff = str(rawResult.value)
+					result = round(float(splittedStuff), roundDecimals)
+			
+					if roundDecimals is 0:
+						result = int(result)
+				except Exception as ex:
+					print("Error: " + str(ex)) 
+					result = -1
+			else:
+				print("[" + str(cmd) + "] No value received...")
+				result = 0
+			
+		except Exception as excep:
+			print("Error: " + str(excep))
+			result = -1
+		return result
+	
+	def CalculateLambdaPointerPosition(currentLambda, maxX, maxY, pointerWidth):
+		finalPos = int(maxX / 2) - pointerWidth, 0, int(maxX / 2) + pointerWidth, 12
+	
+		try:
+			lambdaPercent = float(currentLambda) / 1.0
+			finalPos = (maxX * lambdaPercent) - pointerWidth, 0, (maxX * lambdaPercent) + pointerWidth, 12
+		except:
+			pass
+	
+		return finalPos
+	
+	def uiUpdate():
+		global connectionStatus
+		global connection
+	
+		#print("Updating UI...")
+	
+		time = datetime.datetime.now() + datetime.timedelta(hours=1)
+		timeLabel.config(text=time.strftime("%H:%M:%S"))
+	
+		temp = subprocess.run(['cat', '/sys/class/thermal/thermal_zone0/temp'], stdout=subprocess.PIPE).stdout.decode('utf-8')
+		pitempLabel.config(text=round(int(temp)/1000))
+	
+		clock = subprocess.run(['cat', '/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq'], stdout=subprocess.PIPE).stdout.decode('utf-8')
+		piclockLabel.config(text=round(int(clock)/1000))
+	
+		if connection is not None:
+			connectionStatus = connection.status()
+			statusLabel.config(text=connectionStatus)
+	
+		# if we aren't connected, try to connect and add our custom voltage cmd
+		if connectionStatus is obd.OBDStatus.NOT_CONNECTED or connection is None:
+			connection = obd.OBD()
+			connection.supported_commands.add(voltagecmd)
+		
+		if connectionStatus is obd.OBDStatus.CAR_CONNECTED:
+			currentCarData = CarData(
+				connectionStatus,
+				QueryAndParseResultSpace(connection, voltagecmd, 2),
+				QueryAndParseResultSpace(connection, obd.commands.COOLANT_TEMP, 0),
+				QueryAndParseResultSpace(connection, obd.commands.INTAKE_TEMP, 0),
+				QueryAndParseResultSpace(connection, obd.commands.MAF, 0),
+				QueryAndParseResultSpace(connection, obd.commands.O2_B1S1, 2),
+				QueryAndParseResultSpace(connection, obd.commands.O2_B1S2, 2),
+				QueryAndParseResultSpace(connection, obd.commands.TIMING_ADVANCE, 2),
+				QueryAndParseResultSpace(connection, obd.commands.ENGINE_LOAD, 0),
+				QueryAndParseResultSpace(connection, obd.commands.THROTTLE_POS, 0),
+				QueryAndParseResultSpace(connection, obd.commands.SPEED, 0),
+				QueryAndParseResultSpace(connection, obd.commands.RPM, 0)
+			)
+		else:
+			if connectionStatus is obd.OBDStatus.OBD_CONNECTED:
+				currentCarData = CarData(connectionStatus, QueryAndParseResultSpace(connection, voltagecmd, 2), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+			else:
+				currentCarData = CarData(connectionStatus, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+	
+		batteryPercentageLabel.config(text=str(currentCarData.batteryVoltage) + " V")
+		waterPercentageLabel.config(text=str(currentCarData.coolantTemperature) +'ºC')
+		airPercentageLabel.config(text=str(currentCarData.intakeTemperature) + 'ºC')
+		airflowPercentageLabel.config(text=str(currentCarData.intakeAirflow) + " g/s")
+		lambdaPercentageLabel1.config(text=str(currentCarData.lambdaVoltage1) + " mV")
+		lambdaPercentageLabel2.config(text=str(currentCarData.lambdaVoltage2) + " mV")
+		ignitionPercentageLabel.config(text=str(currentCarData.timingAdvance) + 'º')
+		loadPercentageLabel.config(text=str(currentCarData.engineLoad) + " %")
+		gasPercentageLabel.config(text=str(currentCarData.throttle) + " %")
+		speedLabel.config(text=str(currentCarData.speed))
+		revsLabel.config(text=str(currentCarData.rpm))
+	
+		loadBar["value"] = currentCarData.engineLoad
+		gasBar["value"] = currentCarData.throttle
+	
+		lambdaPointer1Pos = CalculateLambdaPointerPosition(currentCarData.lambdaVoltage1, 180, 12)
+		lambdaPointer2Pos = CalculateLambdaPointerPosition(currentCarData.lambdaVoltage2, 180, 12)
+	
+		lambda1BarCanvas.coords(lambda1Pointer, lambdaPointer1Pos[0], lambdaPointer1Pos[1], lambdaPointer1Pos[2], lambdaPointer1Pos[3],)
+		lambda2BarCanvas.coords(lambda2Pointer, lambdaPointer2Pos[0], lambdaPointer2Pos[1], lambdaPointer2Pos[2], lambdaPointer2Pos[3],)
+	
+		# log data
+		if logValuesToFile:
+			with open(logFileName, "a") as logfile:
+				logfile.write(json.dumps(currentCarData.__dict__) + "\n")
+	
+		master.after(250, uiUpdate)
+
+	
 	def quit():
 		master.destroy()
 		return True
@@ -185,6 +330,15 @@ def gui():
 	quitButton = tk.Button(master, text = 'GO BACK TO MENU', width = 70, command = quit, bg='grey', fg='firebrick1', activeforeground="Orange",
 						activebackground="blue", font='Aldrich',relief='groove')
 	quitButton.place(x=40, y=540)
+	
+	os.system("xset s off")
+	os.system("xset dpms 0 0 0")
+	os.system("xset -dpms s off")
+
+	# hide the cursor
+	os.system("unclutter &")
+
+	uiUpdate()
 	
 
 		
